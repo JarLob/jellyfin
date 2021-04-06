@@ -1,0 +1,57 @@
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: "38 10 * * 4"
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.compare-commits.outputs.result }}
+
+    steps:
+      - uses: actions/github-script@v3.1.0
+        id: compare-commits
+        with:
+          script: |
+            const ret = await github.repos.compareCommits({
+              owner: "JarLob",
+              repo: "jellyfin",
+              base: "jellyfin:master",
+              head: "JarLob:master",
+            });
+
+            return { behind_by: ret.data.behind_by, sha: ret.data.base_commit.sha };
+            
+  sync:
+    needs: compare
+    runs-on: ubuntu-latest
+    if: fromJSON(needs.compare.outputs.result).behind_by > 0 || github.event.inputs.force
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        token: ${{ secrets.SYNC_TOKEN }}
+        fetch-depth: 20  
+
+    - run: |
+        git remote add upstream git://github.com/jellyfin/jellyfin.git
+        git config --global user.email "octokit@github.com"
+        git config --global user.name "Octokit"
+        git fetch upstream || exit 1
+        git rebase ${{ fromJSON(needs.compare.outputs.result).sha }} || exit 1
+        git push --force || exit 1
+
+    - run: |
+        echo ${{ github.event.number }} > ./done
+        
+    - uses: actions/upload-artifact@v2
+      with:
+        name: done
+        path: ./done
+        retention-days: 1
